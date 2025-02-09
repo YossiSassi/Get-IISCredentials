@@ -33,8 +33,10 @@ Vaults, e.g. Azure Key Vault, AWS Secrets Manager etc.<br>
 ## Step 3: Map local administrators on IIS boxes
 The ultimate goal of this step is to eventually reduce unnecessary admin access from your IIS boxes, so start by mapping the local ADMINISTRATORS on IIS Servers. You can do this by SCCM, PingCastle local admins scanner, any agent on the target, whatever.<br>
 If you want to query it remotely using PowerShell, you can try:<br>
-<b>$s = 'SRV1','SRV2','SRV3’;<br>
-Invoke-Command  -ComputerName $s -Command {$env:COMPUTERNAME; Get-LocalGroupMember administrators}<br></b>
+```
+$s = 'SRV1','SRV2','SRV3’;
+Invoke-Command  -ComputerName $s -Command {$env:COMPUTERNAME; Get-LocalGroupMember administrators}
+```
 You can also use WinNT provider (rpc) if you don't want/can't use WinRM.<br>
 
 ## Step 4: Secure local access on IIS boxes
