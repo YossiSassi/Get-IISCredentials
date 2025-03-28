@@ -1,6 +1,6 @@
 # Get-IISCredentials
 Gets clear-text credentials by mapping IIS Servers and getting IIS appPools, vDirectories, usernames &amp; passwords.<br>
-Requires local admin permissions on the target servers(s), as well as port 135 (rpc) and port 5985 (winrm) accessible on all target hosts.
+Requires local admin permissions on the target servers(s), as well as port 5985 (winrm) accessible on all target hosts.
 <br><br>
 ## Background</b><br>
 By default, Microsoft Web Server identities’ passwords (e.g. Application Pools, virtual directories etc.) can be extracted as clear-text by any local admin.<br>
@@ -13,7 +13,7 @@ Hence, this tool comes to aid Red/Blue/Purple/SOC/Threat hunting/whatever team t
 ## Step 1: Mapping IIS servers & credentials
 Run _Get-IISCredentials.ps1_ powershell script to map all IIS Servers & Credentials.<br>
 You can run it for all the servers in the entire Active Directory domain, or target a specific host.<br>
-It Uses RPC to detect the w3svc service, and then WinRM to run appcmd.exe and collect the credentials. hence, both port 135 (rpc) and 5985 (winrm) need to be open and accessible.<br>
+It Uses WinRM to detect the w3svc service, and then again WinRM to run appcmd.exe and collect the credentials. Port 5985 need to be open and accessible, and WinRM running.<br>
 
 ## Step 2: Secure Service Accounts on IIS boxes
 1. Use Managed Service Accounts<br>
@@ -50,7 +50,7 @@ e.g. a developer/QA staff can have only start-stop service permissions, or just 
 ## Note about detecting this script's execution
 Obviously, like many other scripts (especially of mine), it's just a tool.. not bad, nor good. that part is up to you 😄<br>
 Red teams can ‘enjoy’ and use this script as well to harvest clear-text credentials, once they have local admin access to host(s).<br>
-Keep in mind that you can detect the full domain servers run quite easily by the multiple access requests, both RPC & WinRM, on multiple hosts.<br>
+Keep in mind that you can detect the full domain servers run quite easily by the multiple access requests, via WinRM (spanning wsmprovhost.exe process), on multiple hosts.<br>
 In addition, your EDR/Sysmon/Whatever will log not only wsmprovhost.exe process on the IIS box(es), but also that it executed appcmd.exe (with wsmprovhost.exe as parent process).<br>
 This may be a bit unusual for most enviroments.<br><br>
 <b>Feedback is always welcome!<br>
